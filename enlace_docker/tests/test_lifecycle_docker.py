@@ -24,9 +24,7 @@ async def test_start_with_dockerfile_builds_and_runs(fake_docker, tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM alpine\n")
 
-    lifecycle = _lifecycle(
-        dockerfile=dockerfile, build_context=tmp_path
-    )
+    lifecycle = _lifecycle(dockerfile=dockerfile, build_context=tmp_path)
 
     # Three calls expected in order: build, rm -f leftover, run.
     fake_docker.queue_ok(lambda k, a: k == "docker" and a[0] == "build")

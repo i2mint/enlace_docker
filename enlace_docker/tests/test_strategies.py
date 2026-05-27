@@ -6,7 +6,6 @@ from a fully-validated AppConfig, including the extras-flow (``dockerfile``,
 ``model_config = ConfigDict(extra="allow")``.
 """
 
-
 from enlace.base import AppConfig, PlatformConfig
 
 from enlace_docker.lifecycle import (

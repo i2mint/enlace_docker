@@ -140,19 +140,16 @@ def fake_docker(monkeypatch):
     monkeypatch.setattr(
         _docker, "container_published_port", fake.container_published_port
     )
-    monkeypatch.setattr(
-        _docker, "compose_published_port", fake.compose_published_port
-    )
+    monkeypatch.setattr(_docker, "compose_published_port", fake.compose_published_port)
     return fake
 
 
 @pytest.fixture
 def docker_available() -> bool:
     """Whether a real ``docker`` CLI is on PATH (gates integration tests)."""
-    return (
-        shutil.which("docker") is not None
-        and os.environ.get("DOCKER_AVAILABLE", "").lower() in ("1", "true", "yes")
-    )
+    return shutil.which("docker") is not None and os.environ.get(
+        "DOCKER_AVAILABLE", ""
+    ).lower() in ("1", "true", "yes")
 
 
 # Surface a clean async event loop policy for asyncio_mode = "auto".

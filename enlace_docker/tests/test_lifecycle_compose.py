@@ -24,9 +24,7 @@ def _lifecycle(**overrides):
 @pytest.mark.asyncio
 async def test_start_runs_compose_up_then_resolves_port(fake_docker):
     lifecycle = _lifecycle()
-    fake_docker.queue_ok(
-        lambda k, a: k == "compose" and a[: 1] == ["-f"] and "up" in a
-    )
+    fake_docker.queue_ok(lambda k, a: k == "compose" and a[:1] == ["-f"] and "up" in a)
     # Pretend compose published the service on a high host port.
     fake_docker.published_port_state[("web", 8080)] = 54321
 

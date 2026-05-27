@@ -61,10 +61,7 @@ class _RestartAccounting:
         self._consecutive_failures += 1
 
     def maybe_reset_backoff(self) -> None:
-        if (
-            self._started_at is not None
-            and time.monotonic() - self._started_at > 30.0
-        ):
+        if self._started_at is not None and time.monotonic() - self._started_at > 30.0:
             self._consecutive_failures = 0
 
     def backoff_delay(self) -> float:
@@ -269,9 +266,7 @@ class DockerContainerLifecycle(_RestartAccounting):
 
     async def _remove_existing_container(self) -> None:
         # ``docker rm -f`` is a no-op if the name doesn't exist (with check=False).
-        await _docker.run_docker(
-            "rm", "-f", self._container_name, check=False
-        )
+        await _docker.run_docker("rm", "-f", self._container_name, check=False)
 
     async def _tcp_ready(self) -> bool:
         try:

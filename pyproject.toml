@@ -52,3 +52,30 @@ ignore = ["D203"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["enlace_docker"]
+
+# ============================================================================
+# CI Configuration (consumed by i2mint/wads reusable workflow)
+# ============================================================================
+# The .github/workflows/ci.yml stub calls i2mint/wads/.github/workflows/uv-ci.yml,
+# which reads everything below. Override defaults here, not in the workflow.
+
+[tool.wads.ci]
+project_name = "enlace_docker"
+
+[tool.wads.ci.testing]
+enabled = true
+python_versions = ["3.10", "3.12"]
+# Docker-dependent tests gate on the DOCKER_AVAILABLE env var (see conftest.py)
+# and skip when it isn't set, so CI runners without Docker still pass.
+coverage_enabled = false
+
+[tool.wads.ci.build]
+sdist = true
+wheel = true
+
+[tool.wads.ci.publish]
+enabled = true
+
+[tool.wads.ci.docs]
+# Small package — README is the doc. Skip GitHub Pages publishing.
+enabled = false

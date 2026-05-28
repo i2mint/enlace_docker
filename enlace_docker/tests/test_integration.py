@@ -24,10 +24,9 @@ import urllib.request
 
 import pytest
 
-_DOCKER = (
-    shutil.which("docker") is not None
-    and os.environ.get("DOCKER_AVAILABLE", "").lower() in ("1", "true", "yes")
-)
+_DOCKER = shutil.which("docker") is not None and os.environ.get(
+    "DOCKER_AVAILABLE", ""
+).lower() in ("1", "true", "yes")
 
 requires_docker = pytest.mark.skipif(
     not _DOCKER,
@@ -104,7 +103,7 @@ async def test_docker_lifecycle_restart_accounting_on_crash(tmp_path):
     host_port = _free_port()
     dockerfile = tmp_path / "Dockerfile"
     # Exits immediately with code 1 — never serves anything.
-    dockerfile.write_text("FROM alpine\nCMD [\"sh\", \"-c\", \"exit 1\"]\n")
+    dockerfile.write_text('FROM alpine\nCMD ["sh", "-c", "exit 1"]\n')
 
     lifecycle = DockerContainerLifecycle(
         name="enlace-docker-itest-crash",
@@ -144,9 +143,7 @@ def test_discovery_mounts_docker_app_as_proxy(tmp_path):
     app_dir = apps_dir / "myservice"
     app_dir.mkdir(parents=True)
     (app_dir / "Dockerfile").write_text("FROM alpine\n")
-    (app_dir / "app.toml").write_text(
-        'mode = "docker"\nport = 8080\n'
-    )
+    (app_dir / "app.toml").write_text('mode = "docker"\nport = 8080\n')
 
     platform = PlatformConfig(apps_dirs=[apps_dir])
     discovered = discover_apps(platform)
@@ -161,9 +158,7 @@ def test_discovery_mounts_docker_app_as_proxy(tmp_path):
 
     # build_backend should mount a proxy at the app's route prefix.
     backend = build_backend(discovered)
-    mounted_paths = {
-        r.path for r in backend.routes if getattr(r, "path", None)
-    }
+    mounted_paths = {r.path for r in backend.routes if getattr(r, "path", None)}
     assert any("/myservice" in p for p in mounted_paths), mounted_paths
 
 

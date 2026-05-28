@@ -189,8 +189,7 @@ def _check_compose(app_dir: Path, toml_data: dict, report: DiagnosticReport) -> 
                 summary=f"mode='compose' but {compose_name} not found",
                 file_path=compose_name,
                 suggestion=(
-                    f"Add a {compose_name}, or set 'compose_file = ...' in "
-                    "app.toml."
+                    f"Add a {compose_name}, or set 'compose_file = ...' in app.toml."
                 ),
             )
         )

@@ -64,9 +64,7 @@ def test_docker_with_healthcheck_no_warning(tmp_path):
 
 def test_docker_healthcheck_none_counts_as_missing(tmp_path):
     (tmp_path / "app.toml").write_text('mode = "docker"\nport = 8080\n')
-    (tmp_path / "Dockerfile").write_text(
-        "FROM alpine\nEXPOSE 8080\nHEALTHCHECK NONE\n"
-    )
+    (tmp_path / "Dockerfile").write_text("FROM alpine\nEXPOSE 8080\nHEALTHCHECK NONE\n")
     report = _report(tmp_path)
     assert CAT_NO_HEALTHCHECK in _cats(report)
 

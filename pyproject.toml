@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "enlace_docker"
-version = "0.0.3"
+version = "0.0.4"
 description = "Docker / docker-compose backend strategies for enlace (mode=docker, compose, image, docker_attached)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -83,6 +83,14 @@ packages = ["enlace_docker"]
 [tool.wads.ci]
 project_name = "enlace_docker"
 
+[tool.wads.ci.install]
+# CI must install the `dev` extra: nearly every lifecycle test is `async def`,
+# and pytest-asyncio (which `asyncio_mode = "auto"` above depends on) lives
+# only there. wads installs bare `pytest` for the test step but no plugins, and
+# `install-extras` defaults to empty — without this line those tests all fail
+# with "async def functions are not natively supported".
+extras = "dev"
+
 [tool.wads.ci.testing]
 enabled = true
 python_versions = ["3.10", "3.12"]

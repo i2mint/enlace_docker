@@ -11,7 +11,10 @@ requires-python = ">=3.10"
 keywords = ["enlace", "docker", "docker-compose", "asgi", "multi-app"]
 authors = [{ name = "Thor Whalen" }]
 dependencies = [
-    "enlace>=0.1.20",
+    # 0.1.21 is the first release carrying the `enlace.diagnosers` extension
+    # point (enlace.diagnose.iter_diagnosers, called by diagnose_app). With
+    # 0.1.20 the diagnoser registered below is never invoked.
+    "enlace>=0.1.21",
     "httpx>=0.24.0",
 ]
 
@@ -39,7 +42,7 @@ image = "enlace_docker.strategies:ImageStrategy"
 docker_attached = "enlace_docker.strategies:DockerAttachedStrategy"
 
 # Docker-aware checks for `enlace diagnose`, registered against enlace's
-# diagnoser extension point (enlace >= 0.1.20).
+# diagnoser extension point (enlace >= 0.1.21).
 [project.entry-points."enlace.diagnosers"]
 docker = "enlace_docker.diagnose:docker_diagnoser"
 

@@ -8,7 +8,19 @@ version = "0.0.4"
 description = "Docker / docker-compose backend strategies for enlace (mode=docker, compose, image, docker_attached)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
 keywords = ["enlace", "docker", "docker-compose", "asgi", "multi-app"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+]
 authors = [{ name = "Thor Whalen" }]
 dependencies = [
     # 0.1.21 is the first release carrying the `enlace.diagnosers` extension
@@ -17,9 +29,6 @@ dependencies = [
     "enlace>=0.1.21",
     "httpx>=0.24.0",
 ]
-
-[project.license]
-text = "Apache-2.0"
 
 [project.urls]
 Homepage = "https://github.com/i2mint/enlace_docker"

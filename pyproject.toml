@@ -47,7 +47,11 @@ docker_attached = "enlace_docker.strategies:DockerAttachedStrategy"
 docker = "enlace_docker.diagnose:docker_diagnoser"
 
 [tool.pytest.ini_options]
-testpaths = ["enlace_docker/tests"]
+# The package dir, not just its tests/ subdir: wads CI runs
+# `pytest --doctest-modules` with no path argument, so collection is driven
+# entirely by testpaths. Pointing it at enlace_docker/tests would silently
+# exclude every module docstring from doctest collection.
+testpaths = ["enlace_docker"]
 asyncio_mode = "auto"
 
 [tool.ruff]

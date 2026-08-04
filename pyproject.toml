@@ -8,15 +8,27 @@ version = "0.0.4"
 description = "Docker / docker-compose backend strategies for enlace (mode=docker, compose, image, docker_attached)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
 keywords = ["enlace", "docker", "docker-compose", "asgi", "multi-app"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+]
 authors = [{ name = "Thor Whalen" }]
 dependencies = [
-    "enlace>=0.1.20",
+    # 0.1.21 is the first release carrying the `enlace.diagnosers` extension
+    # point (enlace.diagnose.iter_diagnosers, called by diagnose_app). With
+    # 0.1.20 the diagnoser registered below is never invoked.
+    "enlace>=0.1.21",
     "httpx>=0.24.0",
 ]
-
-[project.license]
-text = "Apache-2.0"
 
 [project.urls]
 Homepage = "https://github.com/i2mint/enlace_docker"
@@ -39,12 +51,16 @@ image = "enlace_docker.strategies:ImageStrategy"
 docker_attached = "enlace_docker.strategies:DockerAttachedStrategy"
 
 # Docker-aware checks for `enlace diagnose`, registered against enlace's
-# diagnoser extension point (enlace >= 0.1.20).
+# diagnoser extension point (enlace >= 0.1.21).
 [project.entry-points."enlace.diagnosers"]
 docker = "enlace_docker.diagnose:docker_diagnoser"
 
 [tool.pytest.ini_options]
-testpaths = ["enlace_docker/tests"]
+# The package dir, not just its tests/ subdir: wads CI runs
+# `pytest --doctest-modules` with no path argument, so collection is driven
+# entirely by testpaths. Pointing it at enlace_docker/tests would silently
+# exclude every module docstring from doctest collection.
+testpaths = ["enlace_docker"]
 asyncio_mode = "auto"
 
 [tool.ruff]
@@ -66,6 +82,14 @@ packages = ["enlace_docker"]
 
 [tool.wads.ci]
 project_name = "enlace_docker"
+
+[tool.wads.ci.install]
+# CI must install the `dev` extra: nearly every lifecycle test is `async def`,
+# and pytest-asyncio (which `asyncio_mode = "auto"` above depends on) lives
+# only there. wads installs bare `pytest` for the test step but no plugins, and
+# `install-extras` defaults to empty — without this line those tests all fail
+# with "async def functions are not natively supported".
+extras = "dev"
 
 [tool.wads.ci.testing]
 enabled = true

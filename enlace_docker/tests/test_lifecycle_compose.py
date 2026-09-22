@@ -83,3 +83,30 @@ async def test_stop_runs_compose_down(fake_docker):
 
     assert any("down" in a for k, a in fake_docker.calls if k == "compose")
     assert lifecycle.state == "exited"
+
+
+@pytest.mark.asyncio
+async def test_start_warns_when_published_on_all_interfaces(fake_docker, capsys):
+    """A compose service published on 0.0.0.0 is reachable around the gateway."""
+    fake_docker.published_port_state[("web", 8080)] = 54321
+    fake_docker.published_hosts = ["127.0.0.1", "::"]  # mixed v4/v6 binding
+    lifecycle = _lifecycle()
+    fake_docker.queue_ok(lambda k, a: k == "compose" and "up" in a)
+    await lifecycle.start()
+    out = capsys.readouterr().out
+    assert "not loopback" in out
+    assert '"127.0.0.1::8080"' in out
+    assert lifecycle.host_port == 54321
+    # Warned once, not on every restart.
+    fake_docker.queue_ok(lambda k, a: k == "compose" and "up" in a)
+    await lifecycle.start()
+    assert "not loopback" not in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_start_is_quiet_when_published_on_loopback(fake_docker, capsys):
+    fake_docker.published_port_state[("web", 8080)] = 54321
+    lifecycle = _lifecycle()
+    fake_docker.queue_ok(lambda k, a: k == "compose" and "up" in a)
+    await lifecycle.start()
+    assert "not loopback" not in capsys.readouterr().out

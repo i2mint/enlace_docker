@@ -33,6 +33,17 @@ Requires the `docker` CLI on `PATH`. Compose support requires `docker compose`
 
 ## Usage
 
+### Network exposure
+
+Containers enlace starts (`docker`, `image` modes) publish their port on the
+host's **loopback interface only** (`127.0.0.1:<port>:<port>`), so they are
+reachable solely through the enlace gateway, where auth is applied. For
+`compose` and `docker_attached`, the port mapping is yours: enlace logs a
+warning when the routed port is published on a non-loopback address — publish
+it as `"127.0.0.1::<port>"` (compose) or `-p 127.0.0.1:<port>:<port>` (docker
+run). Note that on Docker Engine < 28, hosts on the same L2 network could still
+reach loopback-published ports (moby/moby#45610).
+
 ### Dockerfile-per-app
 
 ```toml

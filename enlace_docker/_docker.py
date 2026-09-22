@@ -19,6 +19,11 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+#: The only interface enlace publishes container ports on, and the address the
+#: gateway (proxy + health probes) connects to. Loopback keeps a container
+#: reachable solely through the gateway, which is where auth is applied.
+LOOPBACK = "127.0.0.1"
+
 # -- Naming conventions ------------------------------------------------------
 
 
@@ -177,6 +182,23 @@ async def container_exit_code(name: str) -> Optional[int]:
         return None
 
 
+async def container_published_host_ips(name: str, container_port: int) -> list[str]:
+    """Host interfaces the container's ``container_port`` is published on.
+
+    ``docker inspect`` reports an empty ``HostIp`` for "all interfaces"; that
+    is returned as ``0.0.0.0``.
+    """
+    fmt = (
+        '{{range (index .NetworkSettings.Ports "%d/tcp")}}{{.HostIp}},{{end}}'
+        % container_port
+    )
+    raw = await inspect_format(name, fmt)
+    if not raw:
+        return []
+    parts = raw.split(",")[:-1]  # every entry ends with the separator
+    return [ip.strip() or "0.0.0.0" for ip in parts]
+
+
 async def container_published_port(name: str, container_port: int) -> Optional[int]:
     """Host port the container's ``container_port`` is published on.
 
@@ -205,6 +227,63 @@ async def compose_published_port(
 
     Compose outputs ``0.0.0.0:54321`` on stdout. We return the port int.
     """
+    addresses = await compose_published_addresses(
+        project, compose_file, service, service_port
+    )
+    return addresses[0][1] if addresses else None
+
+
+def parse_published_addresses(output: str) -> list[tuple[str, int]]:
+    """Parse ``docker compose port`` output into ``[(host, port), ...]``.
+
+    One line per binding (Compose prints v4 and v6 separately).
+
+    >>> parse_published_addresses("0.0.0.0:54321")
+    [('0.0.0.0', 54321)]
+    >>> parse_published_addresses("127.0.0.1:1\\n[::]:1")
+    [('127.0.0.1', 1), ('::', 1)]
+    >>> parse_published_addresses(":::54321")
+    [('::', 54321)]
+    >>> parse_published_addresses("nonsense")
+    []
+    """
+    out = []
+    for line in output.strip().splitlines():
+        host, sep, port = line.strip().rpartition(":")
+        if not sep:
+            continue
+        try:
+            out.append((host.strip("[]").rstrip(":") or "::", int(port)))
+        except ValueError:
+            continue
+    return out
+
+
+def is_loopback_host(host: str) -> bool:
+    """True if a published address is reachable only from this machine.
+
+    >>> is_loopback_host("127.0.0.1"), is_loopback_host("::1")
+    (True, True)
+    >>> is_loopback_host("0.0.0.0"), is_loopback_host("::")
+    (False, False)
+    """
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+async def compose_published_addresses(
+    project: str,
+    compose_file: str,
+    service: str,
+    service_port: int,
+) -> list[tuple[str, int]]:
+    """Resolve ``docker compose port`` to every ``(host_address, host_port)``."""
     result = await run_docker_compose(
         "-f",
         compose_file,
@@ -216,11 +295,5 @@ async def compose_published_port(
         check=False,
     )
     if not result.ok:
-        return None
-    line = result.stdout.strip()
-    if ":" not in line:
-        return None
-    try:
-        return int(line.rsplit(":", 1)[1])
-    except ValueError:
-        return None
+        return []
+    return parse_published_addresses(result.stdout)

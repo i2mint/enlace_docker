@@ -43,6 +43,9 @@ class FakeDockerCLI:
     published_port_state: dict[tuple[str, int], Optional[int]] = field(
         default_factory=dict
     )
+    # Interfaces a port is reported published on (``docker compose port`` /
+    # ``docker inspect`` HostIp).
+    published_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1"])
 
     def queue(
         self,
@@ -118,6 +121,17 @@ class FakeDockerCLI:
     ) -> Optional[int]:
         return self.published_port_state.get((service, service_port))
 
+    async def compose_published_addresses(
+        self, project: str, compose_file: str, service: str, service_port: int
+    ) -> list[tuple[str, int]]:
+        port = self.published_port_state.get((service, service_port))
+        return [] if port is None else [(h, port) for h in self.published_hosts]
+
+    async def container_published_host_ips(
+        self, name: str, container_port: int
+    ) -> list[str]:
+        return list(self.published_hosts)
+
 
 # -- pytest fixtures ---------------------------------------------------------
 
@@ -141,6 +155,12 @@ def fake_docker(monkeypatch):
         _docker, "container_published_port", fake.container_published_port
     )
     monkeypatch.setattr(_docker, "compose_published_port", fake.compose_published_port)
+    monkeypatch.setattr(
+        _docker, "compose_published_addresses", fake.compose_published_addresses
+    )
+    monkeypatch.setattr(
+        _docker, "container_published_host_ips", fake.container_published_host_ips
+    )
     return fake
 
 

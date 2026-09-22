@@ -31,6 +31,15 @@ _RESET = "\033[0m"
 # -- Restart accounting (shared mixin) ---------------------------------------
 
 
+def _publish_spec(host_port: int, container_port: int) -> str:
+    """``docker run -p`` value publishing *container_port* on loopback only.
+
+    >>> _publish_spec(8080, 80)
+    '127.0.0.1:8080:80'
+    """
+    return f"{_docker.LOOPBACK}:{host_port}:{container_port}"
+
+
 @dataclass
 class _RestartAccounting:
     """Restart-policy plumbing shared by every docker-backed lifecycle.
@@ -81,7 +90,8 @@ class DockerContainerLifecycle(_RestartAccounting):
     ``docker build`` or ``docker pull`` (or nothing) before each start.
 
     The container is named ``enlace-<app>`` and the in-container ``port`` is
-    published to the same port on the host. Health is observed via
+    published to the same port on the host's **loopback** interface only, so
+    it is reachable solely through the gateway. Health is observed via
     ``docker inspect`` ``State.Health.Status`` when a ``HEALTHCHECK`` is
     declared; otherwise we fall back to a plain TCP probe on the host port.
     """
@@ -136,7 +146,10 @@ class DockerContainerLifecycle(_RestartAccounting):
             "--name",
             self._container_name,
             "-p",
-            f"{self.host_port}:{self.container_port}",
+            # Loopback only: the gateway proxies to it locally, and publishing
+            # on every interface would let clients reach the app around the
+            # gateway's auth (Docker's iptables rules also bypass ufw).
+            _publish_spec(self.host_port, self.container_port),
         ]
         for k, v in self.env.items():
             run_argv += ["-e", f"{k}={v}"]
@@ -271,7 +284,7 @@ class DockerContainerLifecycle(_RestartAccounting):
     async def _tcp_ready(self) -> bool:
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", self.host_port),
+                asyncio.open_connection(_docker.LOOPBACK, self.host_port),
                 timeout=1.0,
             )
             writer.close()
@@ -307,6 +320,7 @@ class ComposeStackLifecycle(_RestartAccounting):
     state: str = "stopped"
     _log_proc: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
     _project: str = field(default="", repr=False)
+    _warned_exposure: bool = field(default=False, repr=False)
 
     def __post_init__(self):
         self._project = _docker.compose_project_for(self.name)
@@ -332,12 +346,24 @@ class ComposeStackLifecycle(_RestartAccounting):
         await _docker.run_docker_compose(*argv, env=child_env)
 
         # Resolve the host port for routing.
-        self.host_port = await _docker.compose_published_port(
+        addresses = await _docker.compose_published_addresses(
             self._project,
             str(self.compose_file),
             self.service,
             self.service_port,
         )
+        self.host_port = addresses[0][1] if addresses else None
+        exposed = [h for h, _ in addresses if not _docker.is_loopback_host(h)]
+        if exposed and not self._warned_exposure:
+            self._warned_exposure = True
+            self.log(
+                f"WARNING: service '{self.service}' port {self.service_port} is "
+                f"published on {', '.join(exposed)} (not loopback), so it is "
+                "reachable directly, around the gateway's auth. Publish it on "
+                f"loopback in {self.compose_file.name}, e.g. "
+                f'"{_docker.LOOPBACK}::{self.service_port}". Other services in '
+                "the file are not checked -- publish those on loopback too."
+            )
         if self.host_port is None:
             self.log(
                 f"WARNING: service '{self.service}' has no published port for "
@@ -433,7 +459,7 @@ class ComposeStackLifecycle(_RestartAccounting):
     async def _tcp_ready(self, port: int) -> bool:
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", port),
+                asyncio.open_connection(_docker.LOOPBACK, port),
                 timeout=1.0,
             )
             writer.close()

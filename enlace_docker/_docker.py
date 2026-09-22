@@ -205,6 +205,57 @@ async def compose_published_port(
 
     Compose outputs ``0.0.0.0:54321`` on stdout. We return the port int.
     """
+    address = await compose_published_address(
+        project, compose_file, service, service_port
+    )
+    return None if address is None else address[1]
+
+
+def parse_published_address(line: str) -> Optional[tuple[str, int]]:
+    """Parse ``docker compose port`` output into ``(host, port)``.
+
+    >>> parse_published_address("0.0.0.0:54321")
+    ('0.0.0.0', 54321)
+    >>> parse_published_address("[::1]:8080")
+    ('::1', 8080)
+    >>> parse_published_address("nonsense") is None
+    True
+    """
+    line = line.strip().splitlines()[0] if line.strip() else ""
+    if ":" not in line:
+        return None
+    host, _, port = line.rpartition(":")
+    try:
+        return host.strip("[]"), int(port)
+    except ValueError:
+        return None
+
+
+def is_loopback_host(host: str) -> bool:
+    """True if a published address is reachable only from this machine.
+
+    >>> is_loopback_host("127.0.0.1"), is_loopback_host("::1")
+    (True, True)
+    >>> is_loopback_host("0.0.0.0"), is_loopback_host("::")
+    (False, False)
+    """
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+async def compose_published_address(
+    project: str,
+    compose_file: str,
+    service: str,
+    service_port: int,
+) -> Optional[tuple[str, int]]:
+    """Resolve ``docker compose port`` to ``(host_address, host_port)``."""
     result = await run_docker_compose(
         "-f",
         compose_file,
@@ -217,10 +268,4 @@ async def compose_published_port(
     )
     if not result.ok:
         return None
-    line = result.stdout.strip()
-    if ":" not in line:
-        return None
-    try:
-        return int(line.rsplit(":", 1)[1])
-    except ValueError:
-        return None
+    return parse_published_address(result.stdout)

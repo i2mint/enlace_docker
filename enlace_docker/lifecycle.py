@@ -31,6 +31,18 @@ _RESET = "\033[0m"
 # -- Restart accounting (shared mixin) ---------------------------------------
 
 
+def _publish_spec(bind_host: str, host_port: int, container_port: int) -> str:
+    """``docker run -p`` value publishing *container_port* on *bind_host* only.
+
+    >>> _publish_spec("127.0.0.1", 8080, 80)
+    '127.0.0.1:8080:80'
+    >>> _publish_spec("::1", 8080, 80)
+    '[::1]:8080:80'
+    """
+    host = f"[{bind_host}]" if ":" in bind_host else bind_host
+    return f"{host}:{host_port}:{container_port}"
+
+
 @dataclass
 class _RestartAccounting:
     """Restart-policy plumbing shared by every docker-backed lifecycle.
@@ -90,6 +102,11 @@ class DockerContainerLifecycle(_RestartAccounting):
     image: str = ""  # local tag (build) or remote ref (pull)
     container_port: int = 0
     host_port: int = 0
+    # Interface the container port is published on. Loopback by default: the
+    # enlace gateway proxies to it locally, and publishing on every interface
+    # would let clients reach the app directly, around the gateway's auth
+    # (Docker's own iptables rules also bypass host firewalls like ufw).
+    bind_host: str = "127.0.0.1"
     env: dict[str, str] = field(default_factory=dict)
     extra_run_args: list[str] = field(default_factory=list)
     ready_timeout: float = 30.0
@@ -136,7 +153,7 @@ class DockerContainerLifecycle(_RestartAccounting):
             "--name",
             self._container_name,
             "-p",
-            f"{self.host_port}:{self.container_port}",
+            _publish_spec(self.bind_host, self.host_port, self.container_port),
         ]
         for k, v in self.env.items():
             run_argv += ["-e", f"{k}={v}"]
@@ -332,12 +349,21 @@ class ComposeStackLifecycle(_RestartAccounting):
         await _docker.run_docker_compose(*argv, env=child_env)
 
         # Resolve the host port for routing.
-        self.host_port = await _docker.compose_published_port(
+        address = await _docker.compose_published_address(
             self._project,
             str(self.compose_file),
             self.service,
             self.service_port,
         )
+        self.host_port = None if address is None else address[1]
+        if address is not None and not _docker.is_loopback_host(address[0]):
+            self.log(
+                f"WARNING: service '{self.service}' port {self.service_port} is "
+                f"published on {address[0]} (not loopback), so it is reachable "
+                "directly, around the gateway's auth. Publish it on loopback in "
+                f"{self.compose_file.name}: "
+                f'"127.0.0.1:{address[1]}:{self.service_port}".'
+            )
         if self.host_port is None:
             self.log(
                 f"WARNING: service '{self.service}' has no published port for "

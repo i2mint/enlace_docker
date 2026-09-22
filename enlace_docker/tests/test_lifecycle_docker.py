@@ -75,7 +75,9 @@ async def test_start_passes_env_and_port_mapping(fake_docker):
     await lifecycle.start()
 
     argv = captured["argv"]
-    assert "8080:8080" in argv  # -p host:container
+    # -p publishes on loopback only: the gateway proxies locally, and an
+    # all-interfaces publish would let clients reach the app around its auth.
+    assert argv[argv.index("-p") + 1] == "127.0.0.1:8080:8080"
     # env propagation
     assert "LOG_LEVEL=debug" in argv
     # enlace contract: managed apps see ENLACE_MANAGED=1

@@ -47,7 +47,7 @@ def _proxy(app):
     """Build the standard reverse-proxy app for ``app`` at its route prefix."""
     from enlace.proxy import make_proxy_app
 
-    upstream = f"http://127.0.0.1:{app.port}"
+    upstream = f"http://{_docker.LOOPBACK}:{app.port}"
     return make_proxy_app(upstream=upstream, strip_prefix=app.route_prefix)
 
 
@@ -62,7 +62,8 @@ class DockerStrategy(BackendStrategy):
     - Image tag is ``enlace/<app>:dev`` (local, never pushed).
     - Container is named ``enlace-<app>``.
     - ``port`` is the in-container port; we publish it to the same port on
-      the host (matching how the Dockerfile's ``EXPOSE`` directive reads).
+      the host's loopback interface (matching how the Dockerfile's ``EXPOSE``
+      directive reads), so only the gateway can reach it.
     """
 
     name = "docker"
@@ -270,7 +271,7 @@ class _ComposeProxyProxy:
         lifecycle = self._app_config.__dict__.get("_compose_lifecycle")
         if lifecycle is None or lifecycle.host_port is None:
             return None
-        upstream = f"http://127.0.0.1:{lifecycle.host_port}"
+        upstream = f"http://{_docker.LOOPBACK}:{lifecycle.host_port}"
         return make_proxy_app(
             upstream=upstream, strip_prefix=self._app_config.route_prefix
         )
@@ -357,10 +358,26 @@ class _AttachedProxy:
         )
         if host_port is None:
             return None
+        exposed = [
+            ip
+            for ip in await _docker.container_published_host_ips(
+                self.container, self.container_port
+            )
+            if not _docker.is_loopback_host(ip)
+        ]
+        if exposed:
+            print(
+                f"[enlace_docker] WARNING: container {self.container!r} publishes "
+                f"port {self.container_port} on {', '.join(exposed)} (not "
+                "loopback), so it is reachable directly, around the gateway's "
+                f"auth. Start it with -p {_docker.LOOPBACK}:{host_port}:"
+                f"{self.container_port}.",
+                flush=True,
+            )
         from enlace.proxy import make_proxy_app
 
         self._proxy = make_proxy_app(
-            upstream=f"http://127.0.0.1:{host_port}",
+            upstream=f"http://{_docker.LOOPBACK}:{host_port}",
             strip_prefix=self.route_prefix,
         )
         return self._proxy

@@ -6,6 +6,7 @@ from a fully-validated AppConfig, including the extras-flow (``dockerfile``,
 ``model_config = ConfigDict(extra="allow")``.
 """
 
+import pytest
 from enlace.base import AppConfig, PlatformConfig
 
 from enlace_docker.lifecycle import (
@@ -137,3 +138,43 @@ def test_docker_attached_make_asgi_carries_container_name():
     assert proxy.container == "some-running"
     assert proxy.container_port == 8080
     assert proxy.route_prefix == "/api/myapp"
+
+
+# -- exposure checks (loopback-only publishing) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attached_container_published_everywhere_is_flagged(fake_docker, capsys):
+    from enlace_docker.strategies import _AttachedProxy
+
+    fake_docker.published_port_state[("my-running", 8080)] = 8080
+    fake_docker.published_hosts = ["0.0.0.0"]
+    proxy = _AttachedProxy(
+        container="my-running", container_port=8080, route_prefix="/api/x"
+    )
+    assert await proxy._get_proxy() is not None
+    out = capsys.readouterr().out
+    assert "not loopback" in out
+    assert "-p 127.0.0.1:8080:8080" in out
+
+
+@pytest.mark.asyncio
+async def test_attached_container_on_loopback_is_quiet(fake_docker, capsys):
+    from enlace_docker.strategies import _AttachedProxy
+
+    fake_docker.published_port_state[("my-running", 8080)] = 8080
+    proxy = _AttachedProxy(
+        container="my-running", container_port=8080, route_prefix="/api/x"
+    )
+    assert await proxy._get_proxy() is not None
+    assert "not loopback" not in capsys.readouterr().out
+
+
+def test_proxies_connect_to_the_publish_interface():
+    """One constant decides where ports are published AND where the gateway
+    connects, so the two cannot drift apart."""
+    from enlace_docker import _docker
+    from enlace_docker.lifecycle import _publish_spec
+
+    assert _publish_spec(8080, 80).startswith(_docker.LOOPBACK + ":")
+    assert _docker.is_loopback_host(_docker.LOOPBACK)

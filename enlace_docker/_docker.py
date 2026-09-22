@@ -19,6 +19,11 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+#: The only interface enlace publishes container ports on, and the address the
+#: gateway (proxy + health probes) connects to. Loopback keeps a container
+#: reachable solely through the gateway, which is where auth is applied.
+LOOPBACK = "127.0.0.1"
+
 # -- Naming conventions ------------------------------------------------------
 
 
@@ -177,6 +182,23 @@ async def container_exit_code(name: str) -> Optional[int]:
         return None
 
 
+async def container_published_host_ips(name: str, container_port: int) -> list[str]:
+    """Host interfaces the container's ``container_port`` is published on.
+
+    ``docker inspect`` reports an empty ``HostIp`` for "all interfaces"; that
+    is returned as ``0.0.0.0``.
+    """
+    fmt = (
+        '{{range (index .NetworkSettings.Ports "%d/tcp")}}{{.HostIp}},{{end}}'
+        % container_port
+    )
+    raw = await inspect_format(name, fmt)
+    if not raw:
+        return []
+    parts = raw.split(",")[:-1]  # every entry ends with the separator
+    return [ip.strip() or "0.0.0.0" for ip in parts]
+
+
 async def container_published_port(name: str, container_port: int) -> Optional[int]:
     """Host port the container's ``container_port`` is published on.
 
@@ -205,30 +227,36 @@ async def compose_published_port(
 
     Compose outputs ``0.0.0.0:54321`` on stdout. We return the port int.
     """
-    address = await compose_published_address(
+    addresses = await compose_published_addresses(
         project, compose_file, service, service_port
     )
-    return None if address is None else address[1]
+    return addresses[0][1] if addresses else None
 
 
-def parse_published_address(line: str) -> Optional[tuple[str, int]]:
-    """Parse ``docker compose port`` output into ``(host, port)``.
+def parse_published_addresses(output: str) -> list[tuple[str, int]]:
+    """Parse ``docker compose port`` output into ``[(host, port), ...]``.
 
-    >>> parse_published_address("0.0.0.0:54321")
-    ('0.0.0.0', 54321)
-    >>> parse_published_address("[::1]:8080")
-    ('::1', 8080)
-    >>> parse_published_address("nonsense") is None
-    True
+    One line per binding (Compose prints v4 and v6 separately).
+
+    >>> parse_published_addresses("0.0.0.0:54321")
+    [('0.0.0.0', 54321)]
+    >>> parse_published_addresses("127.0.0.1:1\\n[::]:1")
+    [('127.0.0.1', 1), ('::', 1)]
+    >>> parse_published_addresses(":::54321")
+    [('::', 54321)]
+    >>> parse_published_addresses("nonsense")
+    []
     """
-    line = line.strip().splitlines()[0] if line.strip() else ""
-    if ":" not in line:
-        return None
-    host, _, port = line.rpartition(":")
-    try:
-        return host.strip("[]"), int(port)
-    except ValueError:
-        return None
+    out = []
+    for line in output.strip().splitlines():
+        host, sep, port = line.strip().rpartition(":")
+        if not sep:
+            continue
+        try:
+            out.append((host.strip("[]").rstrip(":") or "::", int(port)))
+        except ValueError:
+            continue
+    return out
 
 
 def is_loopback_host(host: str) -> bool:
@@ -249,13 +277,13 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
-async def compose_published_address(
+async def compose_published_addresses(
     project: str,
     compose_file: str,
     service: str,
     service_port: int,
-) -> Optional[tuple[str, int]]:
-    """Resolve ``docker compose port`` to ``(host_address, host_port)``."""
+) -> list[tuple[str, int]]:
+    """Resolve ``docker compose port`` to every ``(host_address, host_port)``."""
     result = await run_docker_compose(
         "-f",
         compose_file,
@@ -267,5 +295,5 @@ async def compose_published_address(
         check=False,
     )
     if not result.ok:
-        return None
-    return parse_published_address(result.stdout)
+        return []
+    return parse_published_addresses(result.stdout)

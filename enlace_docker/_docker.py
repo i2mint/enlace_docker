@@ -15,7 +15,9 @@ Conventions:
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+import signal
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -33,6 +35,10 @@ DFLT_TIMEOUT = 30.0
 BUILD_TIMEOUT = 1800.0
 #: Exit code reported for a call cut off by its timeout (coreutils ``timeout``'s).
 TIMEOUT_RETURNCODE = 124
+#: After killing a timed-out call, how long to wait for its pipes to close before
+#: dropping them: a grandchild that escaped the kill (one that started its own
+#: session) can hold them open indefinitely.
+KILL_GRACE = 5.0
 
 # -- Naming conventions ------------------------------------------------------
 
@@ -142,6 +148,11 @@ async def _run(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # Its own process group, so a kill reaches what it spawned: ``docker
+        # compose`` and ``docker buildx`` run a plugin as a child of ``docker``,
+        # and that plugin, hung on the same daemon, would keep the pipes open.
+        # (POSIX only; ignored on Windows.)
+        start_new_session=True,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
@@ -168,13 +179,29 @@ async def _run(
 
 
 async def _kill(proc: asyncio.subprocess.Process) -> None:
-    """Kill *proc* if it is still running and reap it."""
+    """Kill *proc* and its process group, then reap it, in bounded time.
+
+    ``Process.wait()`` resolves only once the child has exited AND every pipe it
+    shares is closed, so a descendant holding a pipe would hang it as surely as
+    the daemon did. Killing the group covers the docker CLI's plugins; for a
+    descendant that left the group, our ends of the pipes are dropped after
+    ``KILL_GRACE``.
+    """
     if proc.returncode is None:
         try:
-            proc.kill()
-        except ProcessLookupError:
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except (ProcessLookupError, PermissionError):
             pass
-    await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), KILL_GRACE)
+    except asyncio.TimeoutError:
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()
+        await proc.wait()
 
 
 # -- Inspection helpers ------------------------------------------------------

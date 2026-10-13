@@ -12,7 +12,9 @@ entry-point group (see ``pyproject.toml``):
 The first three are ``is_supervisable=True`` so the dev supervisor drives
 them via the ``Lifecycle`` protocol (see ``enlace_docker.lifecycle``). All
 four use enlace's built-in ``enlace.proxy.make_proxy_app`` to route HTTP —
-there is no docker-specific proxy code in this package.
+there is no docker-specific proxy code in this package — with the same
+platform-credential filters as enlace's ``mode="process"`` (see
+``_proxy_filters``).
 
 Plugin-specific TOML keys (``dockerfile``, ``image``, ``compose_file``,
 ``service``, ``container``, ``build_args``) flow onto ``AppConfig`` via
@@ -23,7 +25,7 @@ are read here via attribute access.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from enlace.strategies import BackendStrategy
 
@@ -43,12 +45,61 @@ def _get(app, name: str, default=_MISSING):
     return getattr(app, name, default)
 
 
-def _proxy(app):
+def _platform_cookie_names(platform) -> tuple[str, ...]:
+    """The platform's own cookie names, honouring a custom session cookie name.
+
+    Mirrors ``enlace.strategies._platform_cookie_names`` (private there):
+    ``[auth]`` is opaque to enlace core, so only the one key that renames a
+    platform cookie is read.
+    """
+    from enlace.proxy import PLATFORM_COOKIE_NAMES
+
+    auth = getattr(platform, "auth", None) or {}
+    custom = auth.get("session_cookie_name") if isinstance(auth, dict) else None
+    return PLATFORM_COOKIE_NAMES + ((custom,) if custom else ())
+
+
+def _proxy_filters(*, platform=None, forward: bool = False) -> dict[str, Any]:
+    """``make_proxy_app`` filter kwargs keeping platform credentials in the platform.
+
+    Same policy as enlace's ``mode="process"``: a container is a separate
+    program with its own dependency set, so it gets the visitor's platform
+    session/CSRF cookies and ``X-CSRF-Token`` only when its app.toml sets
+    ``forward_platform_credentials = true`` (*forward*), and it may never set a
+    platform cookie or send ``Clear-Site-Data`` / ``Service-Worker-Allowed`` on
+    the platform's origin, whatever it asks for.
+    """
+    from enlace.proxy import (
+        PLATFORM_CREDENTIAL_REQUEST_HEADERS,
+        PLATFORM_UNSAFE_RESPONSE_HEADERS,
+        platform_cookie_filter,
+    )
+
+    platform_cookies = platform_cookie_filter(names=_platform_cookie_names(platform))
+    return dict(
+        cookie_filter=None if forward else platform_cookies,
+        set_cookie_filter=platform_cookies,
+        drop_request_headers=() if forward else PLATFORM_CREDENTIAL_REQUEST_HEADERS,
+        drop_response_headers=PLATFORM_UNSAFE_RESPONSE_HEADERS,
+    )
+
+
+def _app_proxy_filters(app, platform) -> dict[str, Any]:
+    """``_proxy_filters`` for ``app``, honouring its credential opt-in."""
+    forward = bool(_get(app, "forward_platform_credentials", False))
+    return _proxy_filters(platform=platform, forward=forward)
+
+
+def _proxy(app, platform):
     """Build the standard reverse-proxy app for ``app`` at its route prefix."""
     from enlace.proxy import make_proxy_app
 
     upstream = f"http://{_docker.LOOPBACK}:{app.port}"
-    return make_proxy_app(upstream=upstream, strip_prefix=app.route_prefix)
+    return make_proxy_app(
+        upstream=upstream,
+        strip_prefix=app.route_prefix,
+        **_app_proxy_filters(app, platform),
+    )
 
 
 # -- DockerStrategy (mode=docker) --------------------------------------------
@@ -78,6 +129,7 @@ class DockerStrategy(BackendStrategy):
         "restart_policy": "restart_policy",
         "max_retries": "max_retries",
         "restart_delay_ms": "restart_delay_ms",
+        "forward_platform_credentials": "forward_platform_credentials",
     }
     path_keys = {"dockerfile", "context"}
 
@@ -91,7 +143,7 @@ class DockerStrategy(BackendStrategy):
     def make_asgi(self, app, platform):
         if app.port is None:
             return None
-        return _proxy(app)
+        return _proxy(app, platform)
 
     def make_lifecycle(self, app, platform):
         dockerfile = _get(app, "dockerfile", None)
@@ -142,6 +194,7 @@ class ImageStrategy(BackendStrategy):
         "restart_policy": "restart_policy",
         "max_retries": "max_retries",
         "restart_delay_ms": "restart_delay_ms",
+        "forward_platform_credentials": "forward_platform_credentials",
     }
 
     def validate(self, app):
@@ -159,7 +212,7 @@ class ImageStrategy(BackendStrategy):
     def make_asgi(self, app, platform):
         if app.port is None:
             return None
-        return _proxy(app)
+        return _proxy(app, platform)
 
     def make_lifecycle(self, app, platform):
         return DockerContainerLifecycle(
@@ -200,6 +253,7 @@ class ComposeStrategy(BackendStrategy):
         "restart_policy": "restart_policy",
         "max_retries": "max_retries",
         "restart_delay_ms": "restart_delay_ms",
+        "forward_platform_credentials": "forward_platform_credentials",
     }
     path_keys = {"compose_file"}
 
@@ -219,7 +273,7 @@ class ComposeStrategy(BackendStrategy):
         # The host port isn't known until the stack starts and we resolve
         # it via `docker compose port`. The lifecycle stores the resolved
         # host port on itself; build a proxy that reads from there.
-        return _ComposeProxyProxy(app)
+        return _ComposeProxyProxy(app, filters=_app_proxy_filters(app, platform))
 
     def make_lifecycle(self, app, platform):
         compose_file = _get(app, "compose_file", None)
@@ -253,8 +307,10 @@ class _ComposeProxyProxy:
     first request, by which time the lifecycle has resolved the port.
     """
 
-    def __init__(self, app):
+    def __init__(self, app, *, filters: Optional[dict] = None):
         self._app_config = app
+        # Never default to an unfiltered proxy: no filters means the defaults.
+        self._filters = _proxy_filters() if filters is None else filters
         self._proxy = None
 
     async def __call__(self, scope, receive, send):
@@ -273,7 +329,9 @@ class _ComposeProxyProxy:
             return None
         upstream = f"http://{_docker.LOOPBACK}:{lifecycle.host_port}"
         return make_proxy_app(
-            upstream=upstream, strip_prefix=self._app_config.route_prefix
+            upstream=upstream,
+            strip_prefix=self._app_config.route_prefix,
+            **self._filters,
         )
 
 
@@ -297,6 +355,7 @@ class DockerAttachedStrategy(BackendStrategy):
     toml_field_map = {
         "container": "container",
         "port": "port",
+        "forward_platform_credentials": "forward_platform_credentials",
     }
 
     def validate(self, app):
@@ -316,6 +375,7 @@ class DockerAttachedStrategy(BackendStrategy):
             container=_get(app, "container"),
             container_port=app.port,
             route_prefix=app.route_prefix,
+            filters=_app_proxy_filters(app, platform),
         )
 
     # make_lifecycle: inherited no-op (None) — strategy is not supervisable.
@@ -330,10 +390,19 @@ class _AttachedProxy:
     the next request routes through.
     """
 
-    def __init__(self, *, container: str, container_port: int, route_prefix: str):
+    def __init__(
+        self,
+        *,
+        container: str,
+        container_port: int,
+        route_prefix: str,
+        filters: Optional[dict] = None,
+    ):
         self.container = container
         self.container_port = container_port
         self.route_prefix = route_prefix
+        # Never default to an unfiltered proxy: no filters means the defaults.
+        self._filters = _proxy_filters() if filters is None else filters
         self._proxy = None
 
     async def __call__(self, scope, receive, send):
@@ -379,6 +448,7 @@ class _AttachedProxy:
         self._proxy = make_proxy_app(
             upstream=f"http://{_docker.LOOPBACK}:{host_port}",
             strip_prefix=self.route_prefix,
+            **self._filters,
         )
         return self._proxy
 

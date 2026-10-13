@@ -44,6 +44,15 @@ it as `"127.0.0.1::<port>"` (compose) or `-p 127.0.0.1:<port>:<port>` (docker
 run). Note that on Docker Engine < 28, hosts on the same L2 network could still
 reach loopback-published ports (moby/moby#45610).
 
+### Platform credentials
+
+Every mode proxies with the same filters as enlace's `mode="process"`: the container does not see the visitor's platform cookies (`enlace_session`, `enlace_csrf`, `enlace_oauth_state`, `shared_auth_*`, and a custom `[auth] session_cookie_name`) or the `X-CSRF-Token` header, and it can never set a platform cookie or send `Clear-Site-Data` / `Service-Worker-Allowed` on the platform's origin. An app that genuinely needs the caller's session can opt in to *receiving* those credentials (never to setting them):
+
+```toml
+[app]
+forward_platform_credentials = true
+```
+
 ### Dockerfile-per-app
 
 ```toml

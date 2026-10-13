@@ -80,7 +80,9 @@ class FakeDockerCLI:
             raise _docker.DockerCLIError(("docker",) + args, result)
         return result
 
-    async def run_docker_compose(self, *args, check: bool = True, env=None, timeout=None):
+    async def run_docker_compose(
+        self, *args, check: bool = True, env=None, timeout=None
+    ):
         self.calls.append(("compose", list(args)))
         result = self._resolve("compose", list(args))
         if check and not result.ok:

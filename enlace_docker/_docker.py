@@ -125,9 +125,7 @@ async def run_docker_compose(
     timeout: Optional[float] = DFLT_TIMEOUT,
 ) -> CommandResult:
     """Run ``docker compose <args>``, capturing stdout/stderr (see ``run_docker``)."""
-    return await _run(
-        "docker", "compose", *args, check=check, env=env, timeout=timeout
-    )
+    return await _run("docker", "compose", *args, check=check, env=env, timeout=timeout)
 
 
 async def _run(

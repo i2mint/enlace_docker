@@ -106,7 +106,9 @@ async def test_a_grandchild_holding_the_pipes_is_killed_with_it(tmp_path):
     result = await asyncio.wait_for(
         _docker._run(
             *_parent_of_a_sleeper(pidfile, own_session=False),
-            check=False, env=None, timeout=3.0,
+            check=False,
+            env=None,
+            timeout=3.0,
         ),
         timeout=20,
     )
@@ -130,7 +132,9 @@ async def test_a_descendant_that_left_the_group_cannot_hang_the_call(
         result = await asyncio.wait_for(
             _docker._run(
                 *_parent_of_a_sleeper(pidfile, own_session=True),
-                check=False, env=None, timeout=3.0,
+                check=False,
+                env=None,
+                timeout=3.0,
             ),
             timeout=20,
         )
@@ -196,7 +200,9 @@ async def test_long_calls_get_a_longer_ceiling(fake_docker, monkeypatch, tmp_pat
         monkeypatch.setattr(_docker, kind, recording(kind))
 
     fake_docker.queue_ok(lambda k, a: a[:1] == ["pull"])
-    life = DockerContainerLifecycle(name="x", image="img:1", host_port=1, container_port=2)
+    life = DockerContainerLifecycle(
+        name="x", image="img:1", host_port=1, container_port=2
+    )
     await life._pull_image()
     fake_docker.queue_ok(lambda k, a: a[:1] == ["stop"])
     life.state = "running"
@@ -204,7 +210,9 @@ async def test_long_calls_get_a_longer_ceiling(fake_docker, monkeypatch, tmp_pat
 
     compose = tmp_path / "docker-compose.yml"
     compose.write_text("services: {}\n")
-    stack = ComposeStackLifecycle(name="s", compose_file=compose, service="web", service_port=80)
+    stack = ComposeStackLifecycle(
+        name="s", compose_file=compose, service="web", service_port=80
+    )
     fake_docker.queue_ok(lambda k, a: k == "compose" and "down" in a)
     stack.state = "running"
     await stack.stop(timeout=5)

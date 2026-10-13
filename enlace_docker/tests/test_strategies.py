@@ -119,7 +119,7 @@ def test_compose_strategy_make_asgi_is_deferred_proxy():
     proxy = ComposeStrategy().make_asgi(app, PlatformConfig())
     assert proxy is not None
     # Internal sentinel: the wrapper holds an unresolved _proxy until called.
-    assert hasattr(proxy, "_resolve_proxy")
+    assert hasattr(proxy, "_current_proxy")
     assert proxy._proxy is None
 
 

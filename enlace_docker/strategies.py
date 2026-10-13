@@ -24,6 +24,8 @@ are read here via attribute access.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -274,12 +276,15 @@ class ComposeStrategy(BackendStrategy):
 
 
 class _ComposeProxyProxy:
-    """Indirection ASGI app: looks up the compose host port at first request.
+    """Indirection ASGI app: routes to the compose service's *current* host port.
 
     The host port assigned to a compose service isn't known until
     ``docker compose up -d`` runs — but ``make_asgi`` is called *before*
-    ``make_lifecycle``. This wrapper defers proxy construction until the
-    first request, by which time the lifecycle has resolved the port.
+    ``make_lifecycle``. And the lifecycle re-resolves it on every start, so
+    after a supervised restart it can be a different ephemeral port. This
+    wrapper therefore reads ``lifecycle.host_port`` on every request and
+    rebuilds its inner proxy (closing the old one's client) whenever the port
+    changed, instead of caching the first one forever (enlace_docker#4).
     """
 
     def __init__(self, app, *, filters: Optional[dict] = None):
@@ -287,24 +292,35 @@ class _ComposeProxyProxy:
         # Never default to an unfiltered proxy: no filters means the defaults.
         self._filters = _proxy_filters() if filters is None else filters
         self._proxy = None
+        self._port: Optional[int] = None
 
     async def __call__(self, scope, receive, send):
-        if self._proxy is None:
-            self._proxy = self._resolve_proxy()
-        if self._proxy is None:
+        proxy = await self._current_proxy()
+        if proxy is None:
             await _send_error(send, 502, b"compose service not yet healthy")
             return
-        await self._proxy(scope, receive, send)
+        await proxy(scope, receive, send)
 
-    def _resolve_proxy(self):
+    async def _current_proxy(self):
+        """The proxy for the lifecycle's current port, or None while it has none.
+
+        No ``await`` between reading the port and installing the proxy, so
+        concurrent requests cannot each build one.
+        """
+        lifecycle = self._app_config.__dict__.get("_compose_lifecycle")
+        port = None if lifecycle is None else lifecycle.host_port
+        if port is None:
+            return None
+        if self._proxy is None or port != self._port:
+            old, self._proxy, self._port = self._proxy, self._build(port), port
+            await _close_proxy(old)
+        return self._proxy
+
+    def _build(self, port: int):
         from enlace.proxy import make_proxy_app
 
-        lifecycle = self._app_config.__dict__.get("_compose_lifecycle")
-        if lifecycle is None or lifecycle.host_port is None:
-            return None
-        upstream = f"http://{_docker.LOOPBACK}:{lifecycle.host_port}"
         return make_proxy_app(
-            upstream=upstream,
+            upstream=f"http://{_docker.LOOPBACK}:{port}",
             strip_prefix=self._app_config.route_prefix,
             **self._filters,
         )
@@ -356,6 +372,12 @@ class DockerAttachedStrategy(BackendStrategy):
     # make_lifecycle: inherited no-op (None) — strategy is not supervisable.
 
 
+#: How long (seconds) a ``docker_attached`` container's resolved host port is
+#: trusted before the next request asks docker again. The user restarts that
+#: container out of band, possibly on a new port; nothing tells the gateway.
+DFLT_ATTACHED_PORT_TTL_S = 30.0
+
+
 class _AttachedProxy:
     """ASGI app that resolves an already-running container's host port lazily.
 
@@ -363,6 +385,12 @@ class _AttachedProxy:
     the platform doesn't refuse to boot just because the user hasn't started
     their detached container yet — they can ``docker run`` it any time and
     the next request routes through.
+
+    The port is re-resolved at most every ``port_ttl`` seconds, so a
+    container restarted on a different host port is followed within that
+    window instead of 502ing until the platform restarts (enlace_docker#4).
+    Resolution is serialised by a lock: concurrent requests build one proxy,
+    not one each with unclosed clients.
     """
 
     def __init__(
@@ -372,13 +400,20 @@ class _AttachedProxy:
         container_port: int,
         route_prefix: str,
         filters: Optional[dict] = None,
+        port_ttl: float = DFLT_ATTACHED_PORT_TTL_S,
+        clock=time.monotonic,
     ):
         self.container = container
         self.container_port = container_port
         self.route_prefix = route_prefix
         # Never default to an unfiltered proxy: no filters means the defaults.
         self._filters = _proxy_filters() if filters is None else filters
+        self.port_ttl = port_ttl
+        self._clock = clock
         self._proxy = None
+        self._port: Optional[int] = None
+        self._resolved_at: Optional[float] = None
+        self._lock = asyncio.Lock()
 
     async def __call__(self, scope, receive, send):
         proxy = await self._get_proxy()
@@ -394,14 +429,43 @@ class _AttachedProxy:
             return
         await proxy(scope, receive, send)
 
-    async def _get_proxy(self) -> Optional[object]:
-        if self._proxy is not None:
-            return self._proxy
-        host_port = await _docker.container_published_port(
-            self.container, self.container_port
+    def _fresh(self) -> bool:
+        return (
+            self._proxy is not None
+            and self._resolved_at is not None
+            and self._clock() - self._resolved_at < self.port_ttl
         )
-        if host_port is None:
-            return None
+
+    async def _get_proxy(self) -> Optional[object]:
+        if self._fresh():
+            return self._proxy
+        async with self._lock:
+            if self._fresh():  # another request resolved it while we waited
+                return self._proxy
+            host_port = await _docker.container_published_port(
+                self.container, self.container_port
+            )
+            self._resolved_at = self._clock()
+            if host_port is None:
+                old, self._proxy, self._port = self._proxy, None, None
+                await _close_proxy(old)
+                return None
+            if host_port == self._port and self._proxy is not None:
+                return self._proxy
+            await self._warn_if_exposed(host_port)
+            from enlace.proxy import make_proxy_app
+
+            old = self._proxy
+            self._proxy = make_proxy_app(
+                upstream=f"http://{_docker.LOOPBACK}:{host_port}",
+                strip_prefix=self.route_prefix,
+                **self._filters,
+            )
+            self._port = host_port
+            await _close_proxy(old)
+            return self._proxy
+
+    async def _warn_if_exposed(self, host_port: int) -> None:
         exposed = [
             ip
             for ip in await _docker.container_published_host_ips(
@@ -418,17 +482,21 @@ class _AttachedProxy:
                 f"{self.container_port}.",
                 flush=True,
             )
-        from enlace.proxy import make_proxy_app
-
-        self._proxy = make_proxy_app(
-            upstream=f"http://{_docker.LOOPBACK}:{host_port}",
-            strip_prefix=self.route_prefix,
-            **self._filters,
-        )
-        return self._proxy
 
 
 # -- Shared helpers ----------------------------------------------------------
+
+
+async def _close_proxy(proxy) -> None:
+    """Close a replaced inner proxy's httpx client, if it ever opened one.
+
+    ``enlace.proxy._HttpxProxy`` opens its client lazily and has no public
+    close, so this reads the attribute defensively: a proxy without one (or
+    one never used) has nothing to close.
+    """
+    client = getattr(proxy, "_client", None)
+    if client is not None:
+        await client.aclose()
 
 
 def _app_dir(app) -> Path:

@@ -49,7 +49,6 @@ reach loopback-published ports (moby/moby#45610).
 Every mode proxies with the same filters as enlace's `mode="process"`: the container does not see the visitor's platform cookies (`enlace_session`, `enlace_csrf`, `enlace_oauth_state`, `shared_auth_*`, and a custom `[auth] session_cookie_name`) or the `X-CSRF-Token` header, and it can never set a platform cookie or send `Clear-Site-Data` / `Service-Worker-Allowed` on the platform's origin. An app that genuinely needs the caller's session can opt in to *receiving* those credentials (never to setting them):
 
 ```toml
-[app]
 forward_platform_credentials = true
 ```
 
@@ -57,7 +56,6 @@ forward_platform_credentials = true
 
 ```toml
 # apps/myapp/app.toml
-[app]
 mode = "docker"
 port = 8080            # in-container port to expose
 dockerfile = "Dockerfile"   # default
@@ -69,7 +67,6 @@ env = { LOG_LEVEL = "info" }
 ### Pre-built image
 
 ```toml
-[app]
 mode = "image"
 image = "ghcr.io/myorg/myapp:1.2.3"
 port = 8080
@@ -79,7 +76,6 @@ env = { LOG_LEVEL = "info" }
 ### docker-compose
 
 ```toml
-[app]
 mode = "compose"
 compose_file = "docker-compose.yml"   # default
 service = "web"                       # which service receives HTTP
@@ -89,7 +85,6 @@ port = 8080                           # service's internal port
 ### Already-running container
 
 ```toml
-[app]
 mode = "docker_attached"
 container = "my-running-container"
 port = 8080

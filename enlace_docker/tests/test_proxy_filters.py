@@ -190,3 +190,35 @@ def test_lazy_wrappers_never_default_to_an_unfiltered_proxy(wrapper):
     assert not w._filters["set_cookie_filter"]("enlace_session")
     assert "x-csrf-token" in w._filters["drop_request_headers"]
     assert "clear-site-data" in w._filters["drop_response_headers"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_opt_in_with_custom_session_cookie_still_blocks_setting_it(mode):
+    platform = PlatformConfig(auth={"session_cookie_name": "my_sess"})
+    app = _app(mode, forward_platform_credentials=True)
+    asgi = STRATEGIES[mode]().make_asgi(app, platform)
+    filters = getattr(asgi, "_filters", None)
+    keep = filters["cookie_filter"] if filters else asgi.cookie_filter
+    keep_set = filters["set_cookie_filter"] if filters else asgi.set_cookie_filter
+    assert keep is None  # read grant: every cookie forwarded
+    assert not keep_set("my_sess") and not keep_set("enlace_session")
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_app_toml_opt_in_reaches_a_docker_app(tmp_path, opt_in):
+    """The flat app.toml key (no ``[app]`` table) lands on a docker-mode app."""
+    from enlace.discover import discover_apps
+
+    app_dir = tmp_path / "apps" / "myservice"
+    app_dir.mkdir(parents=True)
+    (app_dir / "Dockerfile").write_text("FROM alpine\n")
+    toml = 'mode = "docker"\nport = 8080\n'
+    if opt_in:
+        toml += "forward_platform_credentials = true\n"
+    (app_dir / "app.toml").write_text(toml)
+
+    platform = PlatformConfig(apps_dirs=[tmp_path / "apps"])
+    (app,) = discover_apps(platform).apps
+    assert app.forward_platform_credentials is opt_in
+    proxy = DockerStrategy().make_asgi(app, platform)
+    assert (proxy.cookie_filter is None) is opt_in

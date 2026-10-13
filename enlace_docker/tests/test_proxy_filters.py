@@ -77,8 +77,7 @@ class _MockingWrapper:
     async def __call__(self, scope, receive, send):
         if isinstance(self.wrapper, _ComposeProxyProxy):
             if self.wrapper._proxy is None:
-                self.wrapper._proxy = self.wrapper._resolve_proxy()
-                _mock_upstream(self.wrapper._proxy, self.seen)
+                _mock_upstream(await self.wrapper._current_proxy(), self.seen)
         else:
             if self.wrapper._proxy is None:
                 _mock_upstream(await self.wrapper._get_proxy(), self.seen)

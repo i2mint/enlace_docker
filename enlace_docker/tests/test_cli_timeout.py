@@ -106,12 +106,12 @@ async def test_a_grandchild_holding_the_pipes_is_killed_with_it(tmp_path):
     result = await asyncio.wait_for(
         _docker._run(
             *_parent_of_a_sleeper(pidfile, own_session=False),
-            check=False, env=None, timeout=1.0,
+            check=False, env=None, timeout=3.0,
         ),
         timeout=20,
     )
     assert result.returncode == _docker.TIMEOUT_RETURNCODE
-    assert time.monotonic() - t0 < 10
+    assert time.monotonic() - t0 < 12
     grandchild = int(pidfile.read_text())
     for _ in range(50):  # reaped by init, not by us: give it a moment
         if not _alive(grandchild):
@@ -130,7 +130,7 @@ async def test_a_descendant_that_left_the_group_cannot_hang_the_call(
         result = await asyncio.wait_for(
             _docker._run(
                 *_parent_of_a_sleeper(pidfile, own_session=True),
-                check=False, env=None, timeout=1.0,
+                check=False, env=None, timeout=3.0,
             ),
             timeout=20,
         )

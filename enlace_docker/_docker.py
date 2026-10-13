@@ -151,7 +151,9 @@ async def _run(
         # Its own process group, so a kill reaches what it spawned: ``docker
         # compose`` and ``docker buildx`` run a plugin as a child of ``docker``,
         # and that plugin, hung on the same daemon, would keep the pipes open.
-        # (POSIX only; ignored on Windows.)
+        # (POSIX only; ignored on Windows.) A side effect: a terminal Ctrl-C no
+        # longer reaches an in-flight call directly; it is killed through the
+        # cancellation path below instead.
         start_new_session=True,
     )
     try:
@@ -187,21 +189,25 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
     descendant that left the group, our ends of the pipes are dropped after
     ``KILL_GRACE``.
     """
-    if proc.returncode is None:
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:
-                proc.kill()
-        except (ProcessLookupError, PermissionError):
-            pass
+    try:
+        if hasattr(os, "killpg"):
+            # Even when the leader already exited: the group outlives it, and a
+            # member may still hold the pipes.
+            os.killpg(proc.pid, signal.SIGKILL)
+        elif proc.returncode is None:
+            proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+    transport = getattr(proc, "_transport", None)
     try:
         await asyncio.wait_for(proc.wait(), KILL_GRACE)
     except asyncio.TimeoutError:
-        transport = getattr(proc, "_transport", None)
         if transport is not None:
             transport.close()
         await proc.wait()
+    finally:
+        if transport is not None:
+            transport.close()  # idempotent; never leave pipe transports registered
 
 
 # -- Inspection helpers ------------------------------------------------------

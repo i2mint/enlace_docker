@@ -110,6 +110,9 @@ class DockerContainerLifecycle(_RestartAccounting):
     build_context: Optional[Path] = None
     build_args: dict[str, str] = field(default_factory=dict)
     pull_before_start: bool = False  # set True for ImageStrategy
+    # Ceiling on a call that may fetch or build an image (seconds; None = none).
+    # The default suits most images; a cold build of a heavy one may need more.
+    build_timeout: Optional[float] = _docker.BUILD_TIMEOUT
 
     # Supervisor-visible state
     color: str = ""
@@ -159,7 +162,15 @@ class DockerContainerLifecycle(_RestartAccounting):
         run_argv += self.extra_run_args
         run_argv += [self.image]
 
-        await _docker.run_docker(*run_argv)
+        # The image is local when it was just built or pulled; otherwise
+        # ``docker run`` pulls it implicitly, which needs the long ceiling.
+        image_is_local = self.pull_before_start or (
+            self.dockerfile is not None and self.build_context is not None
+        )
+        await _docker.run_docker(
+            *run_argv,
+            timeout=_docker.DFLT_TIMEOUT if image_is_local else self.build_timeout,
+        )
         self._started_at = time.monotonic()
         self.log(f"started ({self._container_name} → :{self.host_port})")
 
@@ -175,6 +186,8 @@ class DockerContainerLifecycle(_RestartAccounting):
             str(int(timeout)),
             self._container_name,
             check=False,
+            # the CLI itself waits up to ``timeout`` for the container to exit
+            timeout=timeout + _docker.DFLT_TIMEOUT,
         )
         if self._log_proc is not None and self._log_proc.returncode is None:
             self._log_proc.terminate()
@@ -271,11 +284,11 @@ class DockerContainerLifecycle(_RestartAccounting):
             argv += ["--build-arg", f"{k}={v}"]
         argv.append(str(self.build_context))
         self.log(f"building image {self.image}")
-        await _docker.run_docker(*argv)
+        await _docker.run_docker(*argv, timeout=self.build_timeout)
 
     async def _pull_image(self) -> None:
         self.log(f"pulling image {self.image}")
-        await _docker.run_docker("pull", self.image)
+        await _docker.run_docker("pull", self.image, timeout=self.build_timeout)
 
     async def _remove_existing_container(self) -> None:
         # ``docker rm -f`` is a no-op if the name doesn't exist (with check=False).
@@ -312,6 +325,8 @@ class ComposeStackLifecycle(_RestartAccounting):
     service_port: int = 0
     env: dict[str, str] = field(default_factory=dict)
     ready_timeout: float = 60.0  # compose stacks are typically slower
+    # Ceiling on ``compose up`` (seconds; None = none): it may pull or build.
+    build_timeout: Optional[float] = _docker.BUILD_TIMEOUT
 
     # Resolved at start() time so make_asgi's proxy can route to it.
     host_port: Optional[int] = None
@@ -343,7 +358,10 @@ class ComposeStackLifecycle(_RestartAccounting):
 
         child_env = {**os.environ, **self.env, "ENLACE_MANAGED": "1"}
         self.log(f"compose up ({self.compose_file.name}, project={self._project})")
-        await _docker.run_docker_compose(*argv, env=child_env)
+        # ``up`` may pull or build images first, so it gets the long ceiling.
+        await _docker.run_docker_compose(
+            *argv, env=child_env, timeout=self.build_timeout
+        )
 
         # Resolve the host port for routing.
         addresses = await _docker.compose_published_addresses(
@@ -384,7 +402,9 @@ class ComposeStackLifecycle(_RestartAccounting):
             "-t",
             str(int(timeout)),
         ]
-        await _docker.run_docker_compose(*argv, check=False)
+        await _docker.run_docker_compose(
+            *argv, check=False, timeout=timeout + _docker.DFLT_TIMEOUT
+        )
         if self._log_proc is not None and self._log_proc.returncode is None:
             self._log_proc.terminate()
             try:

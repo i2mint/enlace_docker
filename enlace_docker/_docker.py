@@ -15,7 +15,9 @@ Conventions:
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+import signal
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -23,6 +25,20 @@ from typing import Optional, Sequence
 #: gateway (proxy + health probes) connects to. Loopback keeps a container
 #: reachable solely through the gateway, which is where auth is applied.
 LOOPBACK = "127.0.0.1"
+
+#: Ceiling, in seconds, on one docker CLI call that only asks or tells the daemon
+#: something (inspect, ps, port, rm, run -d). A healthy daemon answers in well under
+#: a second; a hung one would otherwise hang whatever awaits the call (#9).
+DFLT_TIMEOUT = 30.0
+#: Ceiling for a call that produces an image (build, pull, compose up), which can
+#: legitimately take minutes. Still finite, so a hung daemon fails the start.
+BUILD_TIMEOUT = 1800.0
+#: Exit code reported for a call cut off by its timeout (coreutils ``timeout``'s).
+TIMEOUT_RETURNCODE = 124
+#: After killing a timed-out call, how long to wait for its pipes to close before
+#: dropping them: a grandchild that escaped the kill (one that started its own
+#: session) can hold them open indefinitely.
+KILL_GRACE = 5.0
 
 # -- Naming conventions ------------------------------------------------------
 
@@ -91,43 +107,107 @@ async def run_docker(
     *args: str,
     check: bool = True,
     env: Optional[dict] = None,
+    timeout: Optional[float] = DFLT_TIMEOUT,
 ) -> CommandResult:
     """Run ``docker <args>``, capturing stdout/stderr.
 
-    If ``check`` is True and the command fails, raises ``DockerCLIError``.
+    If ``check`` is True and the command fails, raises ``DockerCLIError``. A call
+    still running after ``timeout`` seconds (``None``: no limit) is killed and counts
+    as a failure with exit code ``TIMEOUT_RETURNCODE``.
     """
-    return await _run("docker", *args, check=check, env=env)
+    return await _run("docker", *args, check=check, env=env, timeout=timeout)
 
 
 async def run_docker_compose(
     *args: str,
     check: bool = True,
     env: Optional[dict] = None,
+    timeout: Optional[float] = DFLT_TIMEOUT,
 ) -> CommandResult:
-    """Run ``docker compose <args>``, capturing stdout/stderr."""
-    return await _run("docker", "compose", *args, check=check, env=env)
+    """Run ``docker compose <args>``, capturing stdout/stderr (see ``run_docker``)."""
+    return await _run(
+        "docker", "compose", *args, check=check, env=env, timeout=timeout
+    )
 
 
 async def _run(
     *argv: str,
     check: bool,
     env: Optional[dict],
+    timeout: Optional[float] = DFLT_TIMEOUT,
 ) -> CommandResult:
+    """Run *argv*; a child still running after *timeout* seconds is killed.
+
+    A timeout is reported like any other failure — a non-ok ``CommandResult``
+    (raised as ``DockerCLIError`` only when ``check``) — never as an
+    ``asyncio.TimeoutError``, so a ``check=False`` probe on a request path degrades
+    to "unknown" instead of failing the request.
+    """
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # Its own process group, so a kill reaches what it spawned: ``docker
+        # compose`` and ``docker buildx`` run a plugin as a child of ``docker``,
+        # and that plugin, hung on the same daemon, would keep the pipes open.
+        # (POSIX only; ignored on Windows.) A side effect: a terminal Ctrl-C no
+        # longer reaches an in-flight call directly; it is killed through the
+        # cancellation path below instead.
+        start_new_session=True,
     )
-    out, err = await proc.communicate()
-    result = CommandResult(
-        returncode=proc.returncode or 0,
-        stdout=out.decode("utf-8", errors="replace"),
-        stderr=err.decode("utf-8", errors="replace"),
-    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        await _kill(proc)
+        result = CommandResult(
+            returncode=TIMEOUT_RETURNCODE,
+            stdout="",
+            stderr=f"timed out after {timeout:g}s (docker daemon not answering?)",
+        )
+    except BaseException:
+        # Cancelled by the caller: do not leave the child behind.
+        await _kill(proc)
+        raise
+    else:
+        result = CommandResult(
+            returncode=proc.returncode or 0,
+            stdout=out.decode("utf-8", errors="replace"),
+            stderr=err.decode("utf-8", errors="replace"),
+        )
     if check and not result.ok:
         raise DockerCLIError(argv, result)
     return result
+
+
+async def _kill(proc: asyncio.subprocess.Process) -> None:
+    """Kill *proc* and its process group, then reap it, in bounded time.
+
+    ``Process.wait()`` resolves only once the child has exited AND every pipe it
+    shares is closed, so a descendant holding a pipe would hang it as surely as
+    the daemon did. Killing the group covers the docker CLI's plugins; for a
+    descendant that left the group, our ends of the pipes are dropped after
+    ``KILL_GRACE``.
+    """
+    try:
+        if hasattr(os, "killpg"):
+            # Even when the leader already exited: the group outlives it, and a
+            # member may still hold the pipes.
+            os.killpg(proc.pid, signal.SIGKILL)
+        elif proc.returncode is None:
+            proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+    transport = getattr(proc, "_transport", None)
+    try:
+        await asyncio.wait_for(proc.wait(), KILL_GRACE)
+    except asyncio.TimeoutError:
+        if transport is not None:
+            transport.close()
+        await proc.wait()
+    finally:
+        if transport is not None:
+            transport.close()  # idempotent; never leave pipe transports registered
 
 
 # -- Inspection helpers ------------------------------------------------------

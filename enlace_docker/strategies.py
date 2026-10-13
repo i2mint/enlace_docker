@@ -389,8 +389,12 @@ class _AttachedProxy:
     The port is re-resolved at most every ``port_ttl`` seconds, so a
     container restarted on a different host port is followed within that
     window instead of 502ing until the platform restarts (enlace_docker#4).
-    Resolution is serialised by a lock: concurrent requests build one proxy,
-    not one each with unclosed clients.
+    Only the very first resolution blocks a request; after that a stale port
+    is refreshed by one background task while requests keep using the current
+    proxy (stale-while-revalidate), so a slow docker daemon never queues every
+    request behind it. A resolution that finds no port keeps the existing
+    proxy: ``docker inspect`` also fails transiently, and a container that is
+    really gone already fails at connect time.
     """
 
     def __init__(
@@ -413,7 +417,10 @@ class _AttachedProxy:
         self._proxy = None
         self._port: Optional[int] = None
         self._resolved_at: Optional[float] = None
-        self._lock = asyncio.Lock()
+        # Created on first use, inside the running loop (a Lock made in
+        # __init__ binds to whichever loop first contends it).
+        self._lock: Optional[asyncio.Lock] = None
+        self._refresh_task: Optional[asyncio.Task] = None
 
     async def __call__(self, scope, receive, send):
         proxy = await self._get_proxy()
@@ -429,29 +436,45 @@ class _AttachedProxy:
             return
         await proxy(scope, receive, send)
 
-    def _fresh(self) -> bool:
+    def _stale(self) -> bool:
         return (
-            self._proxy is not None
-            and self._resolved_at is not None
-            and self._clock() - self._resolved_at < self.port_ttl
+            self._resolved_at is None
+            or self._clock() - self._resolved_at >= self.port_ttl
         )
 
     async def _get_proxy(self) -> Optional[object]:
-        if self._fresh():
+        if self._proxy is not None:
+            if self._stale() and (
+                self._refresh_task is None or self._refresh_task.done()
+            ):
+                self._refresh_task = asyncio.create_task(self._refresh())
             return self._proxy
+        await self._refresh()
+        return self._proxy
+
+    async def _refresh(self) -> None:
+        """Resolve the port once (serialised) and adopt it if it is new."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
         async with self._lock:
-            if self._fresh():  # another request resolved it while we waited
-                return self._proxy
-            host_port = await _docker.container_published_port(
-                self.container, self.container_port
-            )
-            self._resolved_at = self._clock()
+            if self._proxy is not None and not self._stale():
+                return  # another caller refreshed while we waited
+            try:
+                host_port = await _docker.container_published_port(
+                    self.container, self.container_port
+                )
+            except Exception as error:  # a background task must not die silently
+                print(
+                    f"[enlace_docker] could not resolve {self.container!r}'s "
+                    f"port: {error!r}",
+                    flush=True,
+                )
+                return
             if host_port is None:
-                old, self._proxy, self._port = self._proxy, None, None
-                await _close_proxy(old)
-                return None
+                return  # keep what we have; retried on the next stale request
+            self._resolved_at = self._clock()
             if host_port == self._port and self._proxy is not None:
-                return self._proxy
+                return
             await self._warn_if_exposed(host_port)
             from enlace.proxy import make_proxy_app
 
@@ -463,7 +486,6 @@ class _AttachedProxy:
             )
             self._port = host_port
             await _close_proxy(old)
-            return self._proxy
 
     async def _warn_if_exposed(self, host_port: int) -> None:
         exposed = [
@@ -495,8 +517,12 @@ async def _close_proxy(proxy) -> None:
     one never used) has nothing to close.
     """
     client = getattr(proxy, "_client", None)
-    if client is not None:
+    if client is None:
+        return
+    try:
         await client.aclose()
+    except Exception as error:  # the new proxy is installed; don't fail the request
+        print(f"[enlace_docker] closing a replaced proxy failed: {error!r}", flush=True)
 
 
 def _app_dir(app) -> Path:

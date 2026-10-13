@@ -13,8 +13,8 @@ The first three are ``is_supervisable=True`` so the dev supervisor drives
 them via the ``Lifecycle`` protocol (see ``enlace_docker.lifecycle``). All
 four use enlace's built-in ``enlace.proxy.make_proxy_app`` to route HTTP —
 there is no docker-specific proxy code in this package — with the same
-platform-credential filters as enlace's ``mode="process"`` (see
-``_proxy_filters``).
+platform-credential filters as enlace's ``mode="process"`` (enlace's
+``platform_proxy_filters``).
 
 Plugin-specific TOML keys (``dockerfile``, ``image``, ``compose_file``,
 ``service``, ``container``, ``build_args``) flow onto ``AppConfig`` via
@@ -45,49 +45,24 @@ def _get(app, name: str, default=_MISSING):
     return getattr(app, name, default)
 
 
-def _platform_cookie_names(platform) -> tuple[str, ...]:
-    """The platform's own cookie names, honouring a custom session cookie name.
-
-    Mirrors ``enlace.strategies._platform_cookie_names`` (private there):
-    ``[auth]`` is opaque to enlace core, so only the one key that renames a
-    platform cookie is read.
-    """
-    from enlace.proxy import PLATFORM_COOKIE_NAMES
-
-    auth = getattr(platform, "auth", None) or {}
-    custom = auth.get("session_cookie_name") if isinstance(auth, dict) else None
-    return PLATFORM_COOKIE_NAMES + ((custom,) if custom else ())
-
-
-def _proxy_filters(*, platform=None, forward: bool = False) -> dict[str, Any]:
-    """``make_proxy_app`` filter kwargs keeping platform credentials in the platform.
-
-    Same policy as enlace's ``mode="process"``: a container is a separate
-    program with its own dependency set, so it gets the visitor's platform
-    session/CSRF cookies and ``X-CSRF-Token`` only when its app.toml sets
-    ``forward_platform_credentials = true`` (*forward*), and it may never set a
-    platform cookie or send ``Clear-Site-Data`` / ``Service-Worker-Allowed`` on
-    the platform's origin, whatever it asks for.
-    """
-    from enlace.proxy import (
-        PLATFORM_CREDENTIAL_REQUEST_HEADERS,
-        PLATFORM_UNSAFE_RESPONSE_HEADERS,
-        platform_cookie_filter,
-    )
-
-    platform_cookies = platform_cookie_filter(names=_platform_cookie_names(platform))
-    return dict(
-        cookie_filter=None if forward else platform_cookies,
-        set_cookie_filter=platform_cookies,
-        drop_request_headers=() if forward else PLATFORM_CREDENTIAL_REQUEST_HEADERS,
-        drop_response_headers=PLATFORM_UNSAFE_RESPONSE_HEADERS,
-    )
-
-
 def _app_proxy_filters(app, platform) -> dict[str, Any]:
-    """``_proxy_filters`` for ``app``, honouring its credential opt-in."""
+    """enlace's ``platform_proxy_filters`` for ``app``, honouring its opt-in.
+
+    The same policy as enlace's ``mode="process"``, from the same function: a
+    container gets the visitor's platform credentials only when its app.toml
+    sets ``forward_platform_credentials = true``, and may never set them.
+    """
+    from enlace.proxy import platform_proxy_filters
+
     forward = bool(_get(app, "forward_platform_credentials", False))
-    return _proxy_filters(platform=platform, forward=forward)
+    return platform_proxy_filters(platform, forward_credentials=forward)
+
+
+def _default_filters() -> dict[str, Any]:
+    """The filters for a proxy built without a platform: credentials withheld."""
+    from enlace.proxy import platform_proxy_filters
+
+    return platform_proxy_filters()
 
 
 def _proxy(app, platform):
@@ -310,7 +285,7 @@ class _ComposeProxyProxy:
     def __init__(self, app, *, filters: Optional[dict] = None):
         self._app_config = app
         # Never default to an unfiltered proxy: no filters means the defaults.
-        self._filters = _proxy_filters() if filters is None else filters
+        self._filters = _default_filters() if filters is None else filters
         self._proxy = None
 
     async def __call__(self, scope, receive, send):
@@ -402,7 +377,7 @@ class _AttachedProxy:
         self.container_port = container_port
         self.route_prefix = route_prefix
         # Never default to an unfiltered proxy: no filters means the defaults.
-        self._filters = _proxy_filters() if filters is None else filters
+        self._filters = _default_filters() if filters is None else filters
         self._proxy = None
 
     async def __call__(self, scope, receive, send):

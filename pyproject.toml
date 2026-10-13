@@ -23,11 +23,11 @@ classifiers = [
 ]
 authors = [{ name = "Thor Whalen" }]
 dependencies = [
-    # 0.1.44 is the first release exporting the proxy's platform-credential
-    # filters (enlace.proxy.platform_cookie_filter, PLATFORM_*_HEADERS) and
-    # the AppConfig.forward_platform_credentials opt-in that every docker mode
-    # applies. (0.1.21 brought the `enlace.diagnosers` extension point.)
-    "enlace>=0.1.44",
+    # 0.1.47 is the first release exporting enlace.proxy.platform_proxy_filters,
+    # the one credential-filter policy every docker mode applies (0.1.44 brought
+    # AppConfig.forward_platform_credentials; 0.1.21 the `enlace.diagnosers`
+    # extension point).
+    "enlace>=0.1.47",
     "httpx>=0.24.0",
 ]
 

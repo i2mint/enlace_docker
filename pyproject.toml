@@ -23,10 +23,11 @@ classifiers = [
 ]
 authors = [{ name = "Thor Whalen" }]
 dependencies = [
-    # 0.1.21 is the first release carrying the `enlace.diagnosers` extension
-    # point (enlace.diagnose.iter_diagnosers, called by diagnose_app). With
-    # 0.1.20 the diagnoser registered below is never invoked.
-    "enlace>=0.1.21",
+    # 0.1.44 is the first release exporting the proxy's platform-credential
+    # filters (enlace.proxy.platform_cookie_filter, PLATFORM_*_HEADERS) and
+    # the AppConfig.forward_platform_credentials opt-in that every docker mode
+    # applies. (0.1.21 brought the `enlace.diagnosers` extension point.)
+    "enlace>=0.1.44",
     "httpx>=0.24.0",
 ]
 

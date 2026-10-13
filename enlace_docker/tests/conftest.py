@@ -73,14 +73,14 @@ class FakeDockerCLI:
 
     # ---- runner replacements -------------------------------------------------
 
-    async def run_docker(self, *args, check: bool = True, env=None):
+    async def run_docker(self, *args, check: bool = True, env=None, timeout=None):
         self.calls.append(("docker", list(args)))
         result = self._resolve("docker", list(args))
         if check and not result.ok:
             raise _docker.DockerCLIError(("docker",) + args, result)
         return result
 
-    async def run_docker_compose(self, *args, check: bool = True, env=None):
+    async def run_docker_compose(self, *args, check: bool = True, env=None, timeout=None):
         self.calls.append(("compose", list(args)))
         result = self._resolve("compose", list(args))
         if check and not result.ok:

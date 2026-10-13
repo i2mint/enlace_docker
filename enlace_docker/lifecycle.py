@@ -175,6 +175,8 @@ class DockerContainerLifecycle(_RestartAccounting):
             str(int(timeout)),
             self._container_name,
             check=False,
+            # the CLI itself waits up to ``timeout`` for the container to exit
+            timeout=timeout + _docker.DFLT_TIMEOUT,
         )
         if self._log_proc is not None and self._log_proc.returncode is None:
             self._log_proc.terminate()
@@ -271,11 +273,11 @@ class DockerContainerLifecycle(_RestartAccounting):
             argv += ["--build-arg", f"{k}={v}"]
         argv.append(str(self.build_context))
         self.log(f"building image {self.image}")
-        await _docker.run_docker(*argv)
+        await _docker.run_docker(*argv, timeout=_docker.BUILD_TIMEOUT)
 
     async def _pull_image(self) -> None:
         self.log(f"pulling image {self.image}")
-        await _docker.run_docker("pull", self.image)
+        await _docker.run_docker("pull", self.image, timeout=_docker.BUILD_TIMEOUT)
 
     async def _remove_existing_container(self) -> None:
         # ``docker rm -f`` is a no-op if the name doesn't exist (with check=False).
@@ -343,7 +345,10 @@ class ComposeStackLifecycle(_RestartAccounting):
 
         child_env = {**os.environ, **self.env, "ENLACE_MANAGED": "1"}
         self.log(f"compose up ({self.compose_file.name}, project={self._project})")
-        await _docker.run_docker_compose(*argv, env=child_env)
+        # ``up`` may pull or build images first, so it gets the long ceiling.
+        await _docker.run_docker_compose(
+            *argv, env=child_env, timeout=_docker.BUILD_TIMEOUT
+        )
 
         # Resolve the host port for routing.
         addresses = await _docker.compose_published_addresses(
@@ -384,7 +389,9 @@ class ComposeStackLifecycle(_RestartAccounting):
             "-t",
             str(int(timeout)),
         ]
-        await _docker.run_docker_compose(*argv, check=False)
+        await _docker.run_docker_compose(
+            *argv, check=False, timeout=timeout + _docker.DFLT_TIMEOUT
+        )
         if self._log_proc is not None and self._log_proc.returncode is None:
             self._log_proc.terminate()
             try:
